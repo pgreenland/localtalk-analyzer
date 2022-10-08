@@ -55,6 +55,9 @@ class LocalTalkAnalyzer : public Analyzer2
 	void ResetDeserializer(void);
 	void DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 next_edge_location);
 
+	/* Output packet and reset buffer */
+	bool ChecksumOutputResetPacket(void);
+
 	/* Output packet buffer */
 	bool ChecksumOutputPacket(void);
 

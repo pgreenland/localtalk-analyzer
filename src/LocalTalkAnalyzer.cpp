@@ -125,15 +125,19 @@ void LocalTalkAnalyzer::WorkerThread()
 		}
 		else
 		{
-			/* Current bit out of spec, look to end last frame */
-			if (mTempPacketByteCount > 0)
-			{
-				/* End packet */
-				ResetPacket();
-			}
+			/*
+			** Current bit out of spec, look to end last frame
+			** Note that as teh deserializer hasn't found an end flag yet, we don't
+			** expect this packet to be correct, however outputting any bytes decoded
+			** before the bit error might give the user a clue, so output it anyway
+			*/
+			ChecksumOutputResetPacket();
 
 			/* Reset deserializer state */
 			ResetDeserializer();
+
+			/* Mark first edge as an error */
+			mResults->AddMarker(curr_edge_location, AnalyzerResults::ErrorX, mSettings->mInputChannel);
 		}
 
 		/* Report how far we've got through processing samples */
@@ -202,27 +206,9 @@ void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 
 			*/
 
 			/* As a flag has just been encountered, if there was data waiting end packet */
-			if (mTempPacketByteCount > 0)
+			if (ChecksumOutputResetPacket())
 			{
-				/* End flag seen, checksum packet  */
-				if (ChecksumOutputPacket())
-				{
-					/* Commit packet and start a new one */
-					mResults->CommitPacketAndStartNewPacket();
-
-					/* Reset packet buffer */
-					mPacketBytes.clear();
-				}
-				else
-				{
-					/* Invalid checksum or bad packet length, skip packet */
-					ResetPacket();
-				}
-
-				/* Clear synced flag */
-				mSynchronized = false;
-
-				/* Skip this bit */
+				/* There was data waiting, skip this bit */
 				return;
 			}
 
@@ -271,6 +257,37 @@ void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 
 	}
 }
 
+bool LocalTalkAnalyzer::ChecksumOutputResetPacket(void)
+{
+	bool dataWaiting;
+
+	/* Check if data waiting */
+	dataWaiting = (mTempPacketByteCount > 0);
+
+	/* Output packet if waiting */
+	if (dataWaiting)
+	{
+		if (ChecksumOutputPacket())
+		{
+			/* Commit packet and start a new one */
+			mResults->CommitPacketAndStartNewPacket();
+
+			/* Reset packet buffer */
+			mPacketBytes.clear();
+		}
+		else
+		{
+			/* Invalid checksum or bad packet length, skip packet */
+			ResetPacket();
+		}
+
+		/* Clear synced flag */
+		mSynchronized = false;
+	}
+
+	return dataWaiting;
+}
+
 bool LocalTalkAnalyzer::ChecksumOutputPacket(void)
 {
 	bool crc_valid;
@@ -297,7 +314,6 @@ bool LocalTalkAnalyzer::ChecksumOutputPacket(void)
 				act_crc = (act_crc << 1);
 			}
 		}
-
 	}
 	act_crc ^= 0xFFFF;
 
@@ -345,6 +361,7 @@ bool LocalTalkAnalyzer::ChecksumOutputPacket(void)
 
 	/* Output bytes for export / table display */
 	FrameV2 frame_v2;
+	frame_v2.AddInteger("data_len", sizeof(localPacketBytes));
 	frame_v2.AddByteArray("data", localPacketBytes, sizeof(localPacketBytes));
 	frame_v2.AddBoolean("crc_valid", crc_valid);
 	mResults->AddFrameV2(frame_v2, "localtalk", std::get<0>(mPacketBytes[0]), std::get<1>(mPacketBytes[mPacketBytes.size() - 1]));
