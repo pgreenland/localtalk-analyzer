@@ -50,10 +50,9 @@ class LocalTalkAnalyzer : public Analyzer2
 	U8 mConsecutiveOneCount;
 	U8 mTempByte;
 	U8 mTempByteBitCount;
-	U16 mTempPacketByteCount;
 	U64 mDataStartLocation;
 	void ResetDeserializer(void);
-	void DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 next_edge_location);
+	bool DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 next_edge_location);
 
 	/* Output packet and reset buffer */
 	bool ChecksumOutputResetPacket(void);
@@ -63,9 +62,6 @@ class LocalTalkAnalyzer : public Analyzer2
 
 	/* Perform bit-reversal */
 	uint8_t BitReverse(uint8_t uiVal);
-
-	/* Reset packet buffer */
-	void ResetPacket(void);
 
 	/* Tuples of start / end sample number and data byte value for each byte in packet */
 	std::vector<std::tuple<U64, U64, U8>> mPacketBytes;

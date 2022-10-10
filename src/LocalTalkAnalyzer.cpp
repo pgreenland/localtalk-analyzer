@@ -55,7 +55,7 @@ void LocalTalkAnalyzer::WorkerThread()
 		}
 		case TOL05:
 		{
-			/* 0.55% tolerance, calculate error (+/- 0.5% = 1%) */
+			/* 0.5% tolerance, calculate error (+/- 0.5% = 1%) */
 			mTError = mT / 100;
 			break;
 		}
@@ -74,6 +74,13 @@ void LocalTalkAnalyzer::WorkerThread()
 		mLocalTalk->AdvanceToNextEdge();
 		U64 next_edge_location = mLocalTalk->GetSampleNumber();
 
+		/*
+		** Pre-set next next edge location.
+		** If zero, we'll have three edges to consider, current, mid transition (next) and next next
+		** If one, we'll have two edges to consider, current and next.
+		*/
+		U64 next_next_edge_location = next_edge_location;
+
 		/* Calculate samples between edges */
 		U64 edge_distance = next_edge_location - curr_edge_location;
 
@@ -82,29 +89,18 @@ void LocalTalkAnalyzer::WorkerThread()
 		bool bitInSpec = false;
 		if ((edge_distance > (mT - mTError)) && (edge_distance < (mT + mTError)))
 		{
-			/* Bit appears to be a zero, look for next transition */
+			/* Bit appears to be a zero */
+			bitValue = 0;
+
+			/* Look for next transition */
 			mLocalTalk->AdvanceToNextEdge();
-			U64 next_next_edge_location = mLocalTalk->GetSampleNumber();
+			next_next_edge_location = mLocalTalk->GetSampleNumber();
 
 			/* Calculate samples between edges */
 			edge_distance = next_next_edge_location - next_edge_location;
 
 			/* Check next edge distance */
 			bitInSpec = ((edge_distance > (mT - mTError)) && (edge_distance < (mT + mTError)));
-			if (bitInSpec)
-			{
-				/* Bit is a zero */
-				bitValue = 0;
-
-				/* Mark first edge */
-				mResults->AddMarker(curr_edge_location, AnalyzerResults::Zero, mSettings->mInputChannel);
-
-				/* Mark second edge */
-				mResults->AddMarker(next_edge_location, AnalyzerResults::X, mSettings->mInputChannel);
-			}
-
-			/* Update next edge location */
-			next_edge_location = next_next_edge_location;
 		}
 		else if ((edge_distance > ((2 * mT) - mTError)) && (edge_distance < ((2 * mT) + mTError)))
 		{
@@ -113,15 +109,33 @@ void LocalTalkAnalyzer::WorkerThread()
 
 			/* Flag bit is within spec */
 			bitInSpec = true;
-
-			/* Mark first edge */
-			mResults->AddMarker(curr_edge_location, AnalyzerResults::One, mSettings->mInputChannel);
 		}
 
 		if (bitInSpec)
 		{
 			/* Bit is within timing limits, process it */
-			DeserializeBit(bitValue, curr_edge_location, next_edge_location);
+			if (DeserializeBit(bitValue, curr_edge_location, next_next_edge_location))
+			{
+				/* Bit was accepted, mark its value */
+				if (0 == bitValue)
+				{
+					/* Mark first edge */
+					mResults->AddMarker(curr_edge_location, AnalyzerResults::Zero, mSettings->mInputChannel);
+
+					/* Mark second edge */
+					mResults->AddMarker(next_edge_location, AnalyzerResults::X, mSettings->mInputChannel);
+				}
+				else
+				{
+					/* Mark first edge */
+					mResults->AddMarker(curr_edge_location, AnalyzerResults::One, mSettings->mInputChannel);
+				}
+			}
+			else
+			{
+				/* Bit was rejected, mark it as bad */
+				mResults->AddMarker(curr_edge_location, AnalyzerResults::ErrorSquare, mSettings->mInputChannel);
+			}
 		}
 		else
 		{
@@ -155,11 +169,10 @@ void LocalTalkAnalyzer::ResetDeserializer(void)
 	mConsecutiveOneCount = 0;
 	mTempByte = 0;
 	mTempByteBitCount = 0;
-	mTempPacketByteCount = 0;
 	mDataStartLocation = 0;
 }
 
-void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 next_edge_location)
+bool LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 next_edge_location)
 {
 	const U8 CONS_ONES_BEFORE_STUFF = 5;
 	const U8 FLAG_VALUE = 0x7E;
@@ -186,7 +199,7 @@ void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 
 			/* Found stuff bit, skip if synchronized */
 			if (mSynchronized)
 			{
-				return;
+				return true;
 			}
 		}
 		else if (	 ((CONS_ONES_BEFORE_STUFF + 1) == consecutiveOnesTmp)
@@ -208,8 +221,11 @@ void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 
 			/* As a flag has just been encountered, if there was data waiting end packet */
 			if (ChecksumOutputResetPacket())
 			{
-				/* There was data waiting, skip this bit */
-				return;
+				/* There was data waiting, reset synced flag */
+				mSynchronized = false;
+
+				/* Skip bit */
+				return true;
 			}
 
 			/* Flag that we're now in sync */
@@ -218,19 +234,19 @@ void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 
 			/* Reset temporary bit counter now we're in sync */
 			mTempByteBitCount = 0;
 
-			/* Reset data byte count */
-			mTempPacketByteCount = 0;
-
 			/* Skip this bit */
-			return;
+			return true;
 		}
 		else
 		{
 			/* More than five consecutive ones but didn't detect a flag, drop out of sync */
 			mSynchronized = false;
 
-			/* Cancel packet in progress */
-			ResetPacket();
+			/* Output data if there's some waiting */
+			ChecksumOutputResetPacket();
+
+			/* Bit wasn't accepted */
+			return false;
 		}
 	}
 
@@ -249,12 +265,12 @@ void LocalTalkAnalyzer::DeserializeBit(U8 bitValue, U64 curr_edge_location, U64 
 		/* Commit complete byte */
 		mPacketBytes.push_back(std::tuple<U64, U64, U8>(mDataStartLocation, next_edge_location, mTempByte));
 
-		/* Increment byte counter */
-		mTempPacketByteCount++;
-
 		/* Reset bit counter */
 		mTempByteBitCount = 0;
 	}
+
+	/* Bit was accepted */
+	return true;
 }
 
 bool LocalTalkAnalyzer::ChecksumOutputResetPacket(void)
@@ -262,7 +278,7 @@ bool LocalTalkAnalyzer::ChecksumOutputResetPacket(void)
 	bool dataWaiting;
 
 	/* Check if data waiting */
-	dataWaiting = (mTempPacketByteCount > 0);
+	dataWaiting = !mPacketBytes.empty();
 
 	/* Output packet if waiting */
 	if (dataWaiting)
@@ -271,18 +287,15 @@ bool LocalTalkAnalyzer::ChecksumOutputResetPacket(void)
 		{
 			/* Commit packet and start a new one */
 			mResults->CommitPacketAndStartNewPacket();
-
-			/* Reset packet buffer */
-			mPacketBytes.clear();
 		}
 		else
 		{
-			/* Invalid checksum or bad packet length, skip packet */
-			ResetPacket();
+			/* Invalid checksum or bad packet length, abort packet and start a new one */
+			mResults->CancelPacketAndStartNewPacket();
 		}
 
-		/* Clear synced flag */
-		mSynchronized = false;
+		/* Reset packet buffer */
+		mPacketBytes.clear();
 	}
 
 	return dataWaiting;
@@ -381,12 +394,6 @@ uint8_t LocalTalkAnalyzer::BitReverse(uint8_t uiVal)
 
 	/* Reverse the top and bottom nibble then swap them */
 	return (auiBitReverseLookup[uiVal & 0x0f] << 4) | auiBitReverseLookup[uiVal >> 4];
-}
-
-void LocalTalkAnalyzer::ResetPacket(void)
-{
-	mResults->CancelPacketAndStartNewPacket();
-	mPacketBytes.clear();
 }
 
 U32 LocalTalkAnalyzer::GenerateSimulationData(U64 newest_sample_requested, U32 sample_rate,

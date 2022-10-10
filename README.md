@@ -95,6 +95,12 @@ Then, open the newly created solution file located here: `build\localtalk_analyz
 
 | Property | Type | Description |
 | :--- | :--- | :--- |
-| `data` | int | Localtalk data byte |
+| `data` | bytes | Localtalk packet payload |
+| `data_len` | int | Localtalk packet payload length |
+| `crc_valid` | bool | Localtalk packet CRC was correct |
 
-This is the decoded localtalk byte
+This is the decoded localtalk packet.
+
+## CSV to PCAP
+
+The python script `csv_to_pcap.py` may be used to convert a CSV / TXT export of the analyzer data into pcap format, suitable for consumption by Wireshark.
